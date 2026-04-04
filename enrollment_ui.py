@@ -27,18 +27,14 @@ import time
 from tkinter import messagebox
 from typing import Optional
 
-import cv2
 import customtkinter as ctk
+import cv2
 import numpy as np
 from PIL import Image
 
 from modules.camera_handler import get_frame, release_camera
-from modules.database import (
-    DEFAULT_DB_PATH,
-    add_user,
-    delete_user,
-    list_user_names,
-)
+from modules.database import (DEFAULT_DB_PATH, add_user, delete_user,
+                              list_user_names)
 from modules.face_detector import detect_and_align, release_detector
 from modules.face_encoder import encode_face
 
@@ -387,8 +383,9 @@ class EnrollmentApp(ctk.CTk):
 
         except Exception as exc:
             logger.error("Erreur lors de l'enregistrement en base : %s", exc)
-            self.after(0, lambda: self._enroll_failed(
-                f"Échec de l'enregistrement : {exc}"
+            error_msg = str(exc)
+            self.after(0, lambda msg=error_msg: self._enroll_failed(
+                f"Échec de l'enregistrement : {msg}"
             ))
 
     def _enroll_success(self, name: str) -> None:

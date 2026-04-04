@@ -1,0 +1,3 @@
+"""
+FaceLock test suite initialization.
+"""

@@ -37,10 +37,10 @@ from pathlib import Path
 
 import numpy as np
 
+from modules.database import get_all_users
 # Internal modules (same package)
 from modules.face_detector import detect_and_align
 from modules.face_encoder import encode_face
-from modules.database import get_all_users
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -59,8 +59,14 @@ logger = logging.getLogger(__name__)
 # Values recommended by dlib / face_recognition authors: 0.4 (strict) – 0.6 (lenient).
 DEFAULT_THRESHOLD: float = 0.6
 
-# Default database path (mirrors database.py default)
-DEFAULT_DB_PATH: str = "data/db/facelock.db"
+# Default database path — absolute path relative to this module's location
+# This ensures it works regardless of where the script is run from
+DEFAULT_DB_PATH: str = str(
+    Path(__file__).parent.parent / "data" / "db" / "facelock.db"
+)
+
+# Track if we've already warned about missing database (to avoid spam logging)
+_database_warning_logged: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -180,11 +186,14 @@ def authenticate(
     # Step 3 — Load known users                                           #
     # ------------------------------------------------------------------ #
     if not Path(db_path).exists():
-        logger.warning(
-            "authenticate(): database '%s' does not exist. "
-            "No users are enrolled yet.",
-            db_path,
-        )
+        global _database_warning_logged
+        if not _database_warning_logged:
+            logger.warning(
+                "authenticate(): database '%s' does not exist. "
+                "No users are enrolled yet. Run enrollment_ui.py to enroll faces.",
+                db_path,
+            )
+            _database_warning_logged = True
         return None
 
     known_users: list[tuple[str, np.ndarray]] = get_all_users(db_path)
@@ -319,8 +328,8 @@ def get_best_match(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
     import pathlib
+    import sys
 
     sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
@@ -349,6 +358,7 @@ if __name__ == "__main__":
     logger.info("Press 'q' to quit.")
 
     import cv2  # noqa: E402
+
     from modules.camera_handler import get_frame, release_camera  # noqa: E402
     from modules.face_detector import release_detector  # noqa: E402
 
@@ -375,4 +385,33 @@ if __name__ == "__main__":
     release_camera()
     release_detector()
     cv2.destroyAllWindows()
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
+    logger.info("Self-test complete.")
     logger.info("Self-test complete.")

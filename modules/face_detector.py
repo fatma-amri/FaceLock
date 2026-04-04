@@ -38,6 +38,8 @@ from typing import Final
 import cv2
 import mediapipe as mp
 import numpy as np
+from mediapipe.tasks.python import vision as mp_vision
+from mediapipe.tasks.python.core import base_options
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -67,8 +69,8 @@ BBOX_MARGIN: Final[float] = 0.20
 # ---------------------------------------------------------------------------
 # MediaPipe Tasks API types (shorthand aliases)
 # ---------------------------------------------------------------------------
-_Vision = mp.tasks.vision
-_BaseOptions = mp.tasks.BaseOptions
+_Vision = mp_vision
+_BaseOptions = base_options.BaseOptions
 
 # ---------------------------------------------------------------------------
 # Module-level detector singleton
@@ -290,7 +292,7 @@ def detect_and_align(
         # ------------------------------------------------------------------ #
         # Eye key-points for geometric alignment                              #
         # ------------------------------------------------------------------ #
-        kps = best.key_points           # list of NormalizedKeypoint
+        kps = best.keypoints           # list of NormalizedKeypoint
         right_eye = (kps[0].x * fw, kps[0].y * fh)
         left_eye  = (kps[1].x * fw, kps[1].y * fh)
 
