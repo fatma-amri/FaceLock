@@ -54,7 +54,7 @@ FaceLock/
    ```
 
 3. **Install the dependencies**:
-   *(Assuming you have a `requirements.txt` listing opencv-python, numpy, and your face recognition libraries)*
+   Install the required libraries using the provided `requirements.txt` file.
    ```bash
    pip install -r requirements.txt
    ```
