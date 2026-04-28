@@ -1,0 +1,20 @@
+Windows Registry Editor Version 5.00
+
+; FaceLock Credential Provider Registration
+; This file registers the CredentialProvider.dll as a Windows Credential Provider
+; 
+; Run as Administrator: regedit /s register.reg
+; Or: reg import register.reg
+;
+; CLSID: {A1B2C3D4-E5F6-47A8-9B0C-1D2E3F4A5B6C}
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{A1B2C3D4-E5F6-47A8-9B0C-1D2E3F4A5B6C}]
+@="FaceLock Credential Provider"
+
+[HKEY_CLASSES_ROOT\CLSID\{A1B2C3D4-E5F6-47A8-9B0C-1D2E3F4A5B6C}]
+@="FaceLock Credential Provider"
+
+[HKEY_CLASSES_ROOT\CLSID\{A1B2C3D4-E5F6-47A8-9B0C-1D2E3F4A5B6C}\InprocServer32]
+@="C:\\Program Files\\FaceLock\\CredentialProvider.dll"
+"ThreadingModel"="Apartment"
+

@@ -37,43 +37,56 @@ FaceLock/
 
 ## 🚀 Installation & Setup
 
-1. **Clone the repository** (if not already done):
-   ```bash
-   git clone <repository_url>
-   cd FaceLock
-   ```
+### Step 1 — Build C# Service (10 min)
+1. Open Visual Studio 2022
+2. Open: `FaceRecognitionService/FaceRecognitionService.sln`
+3. Top bar: Select `Release | x64`
+4. Build → Build Solution
+5. Check: `FaceRecognitionService/bin/Release/net6.0-windows/FaceRecognitionService.exe` exists
 
-2. **Create a virtual environment** to isolate dependencies:
-   ```bash
-   python -m venv .venv
-   
-   # On macOS/Linux:
-   source .venv/bin/activate
-   # On Windows:
-   .venv\Scripts\activate
-   ```
+### Step 2 — Build C++ DLL (10 min)
+1. Open Visual Studio 2022
+2. Open: `CredentialProvider/CredentialProvider.sln`
+3. Top bar: Select `Release | x64`
+4. Build → Build Solution
+5. Check: `CredentialProvider/bin/Release/x64/CredentialProvider.dll` exists
 
-3. **Install the dependencies**:
-   Install the required libraries using the provided `requirements.txt` file.
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Step 3 — Install Everything (5 min)
+Open PowerShell as Administrator and run:
+```powershell
+powershell -ExecutionPolicy Bypass -File Installer/install.ps1
+```
+
+### Step 4 — Enroll Your Face (2 min)
+```bash
+python enrollment_ui.py
+```
+Follow the on-screen prompts to capture and save your biometric profile.
+
+### Step 5 — Test
+1. Press `Win+L` to lock screen
+2. You should see **"Sign in with Face"** tile
+3. Click it
+4. Look at camera
+5. Windows unlocks ✅
 
 ## 🏃‍♂️ Usage
 
-1. **Enrollment (First Step)**  
-   Before the app can recognize you, you must enroll your face.
-   ```bash
-   python enrollment_ui.py
-   ```
-   Follow the on-screen prompts to capture and save your biometric profile.
+Once installed, FaceLock runs automatically:
 
-2. **Enable Protection**  
-   Start the background daemon to secure your session.
-   ```bash
-   python main.py
-   ```
-   The script will monitor the camera feed. If you leave the field of view for a predefined timeout, the system will automatically lock.
+1. **Auto-starts on login**: The FaceRecognitionService.exe runs as a Windows service
+2. **Continuous authentication**: Monitors your webcam in real-time
+3. **Auto-lock**: If you leave the field of view for a timeout period, your session locks automatically
+
+To start the service manually:
+```powershell
+net start FaceRecognitionService
+```
+
+To stop the service:
+```powershell
+net stop FaceRecognitionService
+```
 
 ## 🔒 Security Notes
 - Ensure your local `.venv` and `models/` folders are not accidentally pushed to your public Git repository (they are usually ignored via `.gitignore`).

@@ -1,0 +1,15 @@
+[Unit]
+Description=FaceLock Biometric Authentication Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/facelock_daemon
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
