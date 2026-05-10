@@ -1,5 +1,6 @@
 // FacelookCredential.cpp - Credential tile implementation
 
+#define SECURITY_WIN32
 #include "FacelookCredential.h"
 #include "PipeClient.h"
 #include "guid.h"
@@ -10,14 +11,95 @@
 #include <sstream>
 #include <cstring>
 
+// ---------------------------------------------------------------------------
+// Debug logging — appends one formatted line to C:\FaceLock_debug.txt
+// ---------------------------------------------------------------------------
+static void DbgLog(const char* fmt, ...)
+{
+    HANDLE hFile = CreateFileA(
+        "C:\\FaceLock_debug.txt",
+        FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+
+    char msg[512];
+    va_list args;
+    va_start(args, fmt);
+    wvsprintfA(msg, fmt, args);
+    va_end(args);
+
+    char buf[600];
+    int len = wsprintfA(buf, "[%02d:%02d:%02d] CRED %s\r\n",
+        st.wHour, st.wMinute, st.wSecond, msg);
+    DWORD written;
+    WriteFile(hFile, buf, (DWORD)len, &written, NULL);
+    CloseHandle(hFile);
+}
+
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "secur32.lib")
+
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
+#endif
+
+#ifndef STATUS_UNSUCCESSFUL
+#define STATUS_UNSUCCESSFUL ((NTSTATUS)0xC0000001L)
+#endif
+
+// __try/__except cannot be mixed with try/catch in the same function scope (C2712).
+// These file-scope helpers isolate the SEH around each LSA call so the COM methods
+// can use try/catch(...) freely.
+
+static NTSTATUS SafeLsaRegisterLogonProcess(HANDLE* phLsaHandle)
+{
+    LSA_OPERATIONAL_MODE mode = 0;
+    LSA_STRING processName;
+    processName.Buffer    = (CHAR*)"FaceLock";
+    processName.Length    = (USHORT)strlen("FaceLock");
+    processName.MaximumLength = processName.Length + 1;
+    *phLsaHandle = NULL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    __try
+    {
+        status = LsaRegisterLogonProcess(&processName, phLsaHandle, &mode);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        *phLsaHandle = NULL;
+        status = STATUS_UNSUCCESSFUL;
+    }
+    return status;
+}
+
+static NTSTATUS SafeLsaLookupAuthenticationPackage(HANDLE hLsaHandle, ULONG* pPackageId)
+{
+    LSA_STRING lsaString;
+    lsaString.Buffer    = (CHAR*)"MSV1_0";
+    lsaString.Length    = (USHORT)strlen("MSV1_0");
+    lsaString.MaximumLength = lsaString.Length + 1;
+    *pPackageId = 0;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    __try
+    {
+        status = LsaLookupAuthenticationPackage(hLsaHandle, &lsaString, pPackageId);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        status = STATUS_UNSUCCESSFUL;
+    }
+    return status;
+}
 
 FacelookCredential::FacelookCredential()
     : _cRef(1)
     , _pcpce(nullptr)
     , _pipeClient(std::make_unique<PipeClient>())
     , _pwszUsername(nullptr)
+    , _pwszPassword(nullptr)
     , _bSelected(FALSE)
 {
 }
@@ -25,12 +107,13 @@ FacelookCredential::FacelookCredential()
 FacelookCredential::~FacelookCredential()
 {
     if (_pcpce)
-    {
         _pcpce->Release();
-    }
     if (_pwszUsername)
-    {
         CoTaskMemFree(_pwszUsername);
+    if (_pwszPassword)
+    {
+        SecureZeroMemory(_pwszPassword, wcslen(_pwszPassword) * sizeof(wchar_t));
+        CoTaskMemFree(_pwszPassword);
     }
 }
 
@@ -100,8 +183,35 @@ STDMETHODIMP FacelookCredential::SetSelected(BOOL* pbAutoLogon)
     _bSelected = TRUE;
     *pbAutoLogon = FALSE;
 
-    // Trigger face authentication
-    AuthenticateWithFace();
+    DbgLog("SetSelected - starting face auth");
+
+    // Free any credentials from a prior attempt
+    if (_pwszUsername) { CoTaskMemFree(_pwszUsername); _pwszUsername = nullptr; }
+    if (_pwszPassword)
+    {
+        SecureZeroMemory(_pwszPassword, wcslen(_pwszPassword) * sizeof(wchar_t));
+        CoTaskMemFree(_pwszPassword);
+        _pwszPassword = nullptr;
+    }
+
+    try
+    {
+        AuthenticateWithFace();
+    }
+    catch (...)
+    {
+        DbgLog("SetSelected - exception from AuthenticateWithFace");
+    }
+
+    if (_pwszUsername)
+    {
+        DbgLog("SetSelected - auth succeeded, setting pbAutoLogon=TRUE");
+        *pbAutoLogon = TRUE;
+    }
+    else
+    {
+        DbgLog("SetSelected - auth failed, pbAutoLogon=FALSE");
+    }
 
     return S_OK;
 }
@@ -194,112 +304,105 @@ STDMETHODIMP FacelookCredential::CommandLinkClicked(DWORD dwFieldID)
 
 STDMETHODIMP FacelookCredential::GetSerialization(
     CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
-    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs)
+    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs,
+    PWSTR* ppwszOptionalStatusText,
+    CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon)
 {
     if (!pcpgsr || !pcpcs)
         return E_INVALIDARG;
 
-    if (!_pwszUsername)
-    {
+    DbgLog("GetSerialization - username=%p password=%p", (void*)_pwszUsername, (void*)_pwszPassword);
+
+    auto fail = [&]() {
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+        pcpcs->ulAuthenticationPackage = 0;
+        pcpcs->rgbSerialization = nullptr;
+        pcpcs->cbSerialization = 0;
+    };
+
+    if (!_pwszUsername || !_pwszPassword)
+    {
+        DbgLog("GetSerialization - missing credentials, NO_CREDENTIAL_FINISHED");
+        fail();
         return S_OK;
     }
 
-    // Build MSV1_0_INTERACTIVE_LOGON credential package
-    // This is what Windows LSA expects for logon credential
-    
-    HANDLE hLsaHandle;
-    LSA_OPERATIONAL_MODE mode;
-    NTSTATUS ntsStatus;
-    
-    // Connect to LSA (requires LSA_STRING, not wide string)
-    LSA_STRING processName;
-    processName.Buffer = (CHAR*)"FaceLock";
-    processName.Length = (USHORT)strlen("FaceLock");
-    processName.MaximumLength = processName.Length + 1;
+    // Look up the MSV1_0 authentication package ID
+    HANDLE hLsa = NULL;
+    ULONG packageId = 0;
 
-    ntsStatus = LsaRegisterLogonProcess(
-        &processName,
-        &hLsaHandle,
-        &mode
-    );
-    if (!NT_SUCCESS(ntsStatus))
+    NTSTATUS status = SafeLsaRegisterLogonProcess(&hLsa);
+    if (!NT_SUCCESS(status))
     {
-        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+        DbgLog("GetSerialization - LsaRegisterLogonProcess failed 0x%08X", (unsigned)status);
+        fail();
         return S_OK;
     }
 
-    // Look up MSV1_0 package
-    LSA_STRING lsaString;
-    lsaString.Buffer = (CHAR*)"MSV1_0";
-    lsaString.Length = (USHORT)strlen("MSV1_0");
-    lsaString.MaximumLength = lsaString.Length + 1;
+    status = SafeLsaLookupAuthenticationPackage(hLsa, &packageId);
+    LsaDeregisterLogonProcess(hLsa);
 
-    ULONG packageId;
-    ntsStatus = LsaLookupAuthenticationPackage(hLsaHandle, &lsaString, &packageId);
-    if (!NT_SUCCESS(ntsStatus))
+    if (!NT_SUCCESS(status))
     {
-        LsaDeregisterLogonProcess(hLsaHandle);
-        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+        DbgLog("GetSerialization - LsaLookupAuthPackage failed 0x%08X", (unsigned)status);
+        fail();
         return S_OK;
     }
 
-    // Build MSV1_0_INTERACTIVE_LOGON structure
-    // Format: [UserName][Domain][Password] where each has length prefix
-    
-    // Get lengths
-    int usernameLenBytes = (wcslen(_pwszUsername) + 1) * sizeof(wchar_t);
-    int domainLenBytes = (wcslen(L".") + 1) * sizeof(wchar_t);  // "." for local machine
-    int passwordLenBytes = 1 * sizeof(wchar_t);  // Empty password (just null terminator)
+    // Build a packed MSV1_0_INTERACTIVE_LOGON buffer.
+    // The UNICODE_STRING.Buffer fields are set to byte offsets from the start
+    // of the buffer (self-relative / packed format) — LSA interprets them as offsets.
+    const wchar_t* domain   = L"."; // "." = local machine
+    const wchar_t* username = _pwszUsername;
+    const wchar_t* password = _pwszPassword;
 
-    // Calculate total size
-    DWORD dwSize = sizeof(MSV1_0_INTERACTIVE_LOGON) +
-                   usernameLenBytes +
-                   domainLenBytes +
-                   passwordLenBytes;
+    DWORD cbDomain   = (DWORD)(wcslen(domain)   * sizeof(wchar_t));
+    DWORD cbUsername = (DWORD)(wcslen(username)  * sizeof(wchar_t));
+    DWORD cbPassword = (DWORD)(wcslen(password)  * sizeof(wchar_t));
+    DWORD cbTotal    = sizeof(MSV1_0_INTERACTIVE_LOGON) + cbDomain + cbUsername + cbPassword;
 
-    // Allocate buffer
-    LPBYTE pBuffer = (LPBYTE)CoTaskMemAlloc(dwSize);
+    BYTE* pBuffer = (BYTE*)CoTaskMemAlloc(cbTotal);
     if (!pBuffer)
     {
-        LsaDeregisterLogonProcess(hLsaHandle);
-        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
-        return S_OK;
+        DbgLog("GetSerialization - CoTaskMemAlloc failed");
+        fail();
+        return E_OUTOFMEMORY;
     }
+    ZeroMemory(pBuffer, cbTotal);
 
-    // Fill in the structure
     MSV1_0_INTERACTIVE_LOGON* pLogon = (MSV1_0_INTERACTIVE_LOGON*)pBuffer;
     pLogon->MessageType = MsV1_0InteractiveLogon;
 
+    BYTE* pData = pBuffer + sizeof(MSV1_0_INTERACTIVE_LOGON);
+
+    // Domain
+    pLogon->LogonDomainName.Length        = (USHORT)cbDomain;
+    pLogon->LogonDomainName.MaximumLength = (USHORT)cbDomain;
+    pLogon->LogonDomainName.Buffer        = (PWSTR)(pData - pBuffer); // byte offset
+    CopyMemory(pData, domain, cbDomain);
+    pData += cbDomain;
+
     // Username
-    pLogon->UserName.Length = (USHORT)(wcslen(_pwszUsername) * sizeof(wchar_t));
-    pLogon->UserName.MaximumLength = (USHORT)usernameLenBytes;
-    pLogon->UserName.Buffer = (wchar_t*)(pBuffer + sizeof(MSV1_0_INTERACTIVE_LOGON));
-    wcscpy_s(pLogon->UserName.Buffer, wcslen(_pwszUsername) + 1, _pwszUsername);
+    pLogon->UserName.Length        = (USHORT)cbUsername;
+    pLogon->UserName.MaximumLength = (USHORT)cbUsername;
+    pLogon->UserName.Buffer        = (PWSTR)(pData - pBuffer);
+    CopyMemory(pData, username, cbUsername);
+    pData += cbUsername;
 
-    // Domain (use "." for local machine)
-    LPBYTE pDomainOffset = pBuffer + sizeof(MSV1_0_INTERACTIVE_LOGON) + usernameLenBytes;
-    pLogon->LogonDomainName.Length = sizeof(wchar_t);  // Just "."
-    pLogon->LogonDomainName.MaximumLength = (USHORT)domainLenBytes;
-    pLogon->LogonDomainName.Buffer = (wchar_t*)pDomainOffset;
-    wcscpy_s(pLogon->LogonDomainName.Buffer, 2, L".");
+    // Password
+    pLogon->Password.Length        = (USHORT)cbPassword;
+    pLogon->Password.MaximumLength = (USHORT)cbPassword;
+    pLogon->Password.Buffer        = (PWSTR)(pData - pBuffer);
+    CopyMemory(pData, password, cbPassword);
 
-    // Password (empty)
-    LPBYTE pPasswordOffset = pDomainOffset + domainLenBytes;
-    pLogon->Password.Length = 0;
-    pLogon->Password.MaximumLength = (USHORT)passwordLenBytes;
-    pLogon->Password.Buffer = (wchar_t*)pPasswordOffset;
-    pLogon->Password.Buffer[0] = L'\0';
+    DbgLog("GetSerialization - pkgId=%d bufSize=%d domain=. user=%s", (int)packageId, (int)cbTotal, "ok");
 
-    // Fill in serialization response
     pcpcs->ulAuthenticationPackage = packageId;
-    pcpcs->rgbSerialization = pBuffer;
-    pcpcs->cbSerialization = dwSize;
+    pcpcs->rgbSerialization        = pBuffer;
+    pcpcs->cbSerialization         = cbTotal;
     pcpcs->clsidCredentialProvider = CLSID_FacelookProvider;
 
     *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-
-    LsaDeregisterLogonProcess(hLsaHandle);
     return S_OK;
 }
 
@@ -317,7 +420,6 @@ STDMETHODIMP FacelookCredential::GetUserSid(wchar_t** ppwszUserSid)
     if (!ppwszUserSid)
         return E_INVALIDARG;
 
-    // Return username or empty if not authenticated
     if (_pwszUsername)
     {
         *ppwszUserSid = (wchar_t*)CoTaskMemAlloc((wcslen(_pwszUsername) + 1) * sizeof(wchar_t));
@@ -333,35 +435,69 @@ STDMETHODIMP FacelookCredential::GetUserSid(wchar_t** ppwszUserSid)
 
 void FacelookCredential::AuthenticateWithFace()
 {
-    // Call the named pipe to authenticate
-    std::string result = _pipeClient->Authenticate(15000);
-
-    // Parse result
-    if (result.find("AUTH_SUCCESS:") == 0)
+    try
     {
-        std::string username = result.substr(13);  // Skip "AUTH_SUCCESS:"
+        DbgLog("AuthenticateWithFace - connecting to pipe (4s hard timeout)");
+        std::string result = _pipeClient->Authenticate(4000);
 
-        // Convert to wide char
-        int len = MultiByteToWideChar(CP_UTF8, 0, username.c_str(), -1, NULL, 0);
-        wchar_t* pwszUsername = (wchar_t*)CoTaskMemAlloc(len * sizeof(wchar_t));
-        if (pwszUsername)
+        // Trim trailing CR/LF
+        while (!result.empty() && (result.back() == '\r' || result.back() == '\n'))
+            result.pop_back();
+
+        DbgLog("AuthenticateWithFace - result length: %d", (int)result.size());
+
+        // Expected format: AUTH_SUCCESS:<username>:<password>
+        if (result.find("AUTH_SUCCESS:") != 0)
         {
-            MultiByteToWideChar(CP_UTF8, 0, username.c_str(), -1, pwszUsername, len);
-            _pwszUsername = pwszUsername;
+            DbgLog("AuthenticateWithFace - FAILED (no AUTH_SUCCESS prefix)");
+            return;
+        }
 
-            // Notify provider that authentication succeeded
-            if (_pcpce)
-            {
-                _pcpce->SetFieldState(this, 0, CPFS_SHOW);
-            }
+        std::string rest = result.substr(13); // after "AUTH_SUCCESS:"
+        size_t colon = rest.find(':');
+        if (colon == std::string::npos)
+        {
+            DbgLog("AuthenticateWithFace - FAILED (missing password separator)");
+            return;
+        }
+
+        std::string username = rest.substr(0, colon);
+        std::string password = rest.substr(colon + 1);
+
+        if (username.empty() || password.empty())
+        {
+            DbgLog("AuthenticateWithFace - FAILED (empty username or password)");
+            return;
+        }
+
+        // Convert username to wide
+        int uLen = MultiByteToWideChar(CP_UTF8, 0, username.c_str(), -1, NULL, 0);
+        _pwszUsername = (wchar_t*)CoTaskMemAlloc(uLen * sizeof(wchar_t));
+        if (_pwszUsername)
+            MultiByteToWideChar(CP_UTF8, 0, username.c_str(), -1, _pwszUsername, uLen);
+
+        // Convert password to wide
+        int pLen = MultiByteToWideChar(CP_UTF8, 0, password.c_str(), -1, NULL, 0);
+        _pwszPassword = (wchar_t*)CoTaskMemAlloc(pLen * sizeof(wchar_t));
+        if (_pwszPassword)
+            MultiByteToWideChar(CP_UTF8, 0, password.c_str(), -1, _pwszPassword, pLen);
+
+        if (_pwszUsername && _pwszPassword)
+        {
+            DbgLog("AuthenticateWithFace - SUCCESS user: %s", username.c_str());
+        }
+        else
+        {
+            // Allocation failure — clean up so SetSelected sees no auth
+            if (_pwszUsername) { CoTaskMemFree(_pwszUsername); _pwszUsername = nullptr; }
+            if (_pwszPassword) { CoTaskMemFree(_pwszPassword); _pwszPassword = nullptr; }
+            DbgLog("AuthenticateWithFace - FAILED (allocation error)");
         }
     }
-    else
+    catch (...)
     {
-        // Authentication failed - show error
-        if (_pcpce)
-        {
-            _pcpce->SetFieldState(this, 0, CPFS_SHOW);
-        }
+        DbgLog("AuthenticateWithFace - exception caught");
+        _pwszUsername = nullptr;
+        _pwszPassword = nullptr;
     }
 }

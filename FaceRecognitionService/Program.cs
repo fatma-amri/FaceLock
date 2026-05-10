@@ -31,10 +31,10 @@ namespace FaceLock.Service
             {
                 // Debug mode: run in console instead of as service
                 Console.WriteLine("[FaceRecognitionService] Running in console mode...");
-                _service.OnStart(args);
+                _service.StartConsole(args);
                 Console.WriteLine("[FaceRecognitionService] Service started. Press any key to stop...");
                 Console.ReadKey();
-                _service.OnStop();
+                _service.StopConsole();
                 Console.WriteLine("[FaceRecognitionService] Service stopped.");
             }
             else
@@ -57,8 +57,6 @@ namespace FaceLock.Service
         public FaceRecognitionService()
         {
             ServiceName = "FaceRecognitionService";
-            DisplayName = "FaceLock Recognition Service";
-            Description = "Biometric authentication service for FaceLock";
             
             CanStop = true;
             CanPauseAndContinue = false;
@@ -72,9 +70,9 @@ namespace FaceLock.Service
             EventLog.Source = ServiceName;
         }
 
-        /// <summary>
-        /// Called when the service starts.
-        /// </summary>
+        public void StartConsole(string[] args) => OnStart(args);
+        public void StopConsole() => OnStop();
+
         protected override void OnStart(string[] args)
         {
             try

@@ -1,109 +1,95 @@
-// dllmain.cpp - DLL entry point and COM factory
-
+#define SECURITY_WIN32
+#define INITGUID
 #include <windows.h>
-#include <ole2.h>
 #include "guid.h"
 #include "FacelookProvider.h"
 
-// Module handle
 HMODULE g_hModule = NULL;
 
-// COM class factory
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+{
+    if (ul_reason_for_call == DLL_PROCESS_ATTACH)
+    {
+        g_hModule = hModule;
+        DisableThreadLibraryCalls(hModule);
+    }
+    return TRUE;
+}
+
+// ---------------------------------------------------------------------------
+// ClassFactory — COM requires DllGetClassObject to return IClassFactory,
+// not the credential provider directly. Windows then calls
+// IClassFactory::CreateInstance to get the actual ICredentialProvider.
+// ---------------------------------------------------------------------------
 class ClassFactory : public IClassFactory
 {
 public:
     ClassFactory() : _cRef(1) {}
 
-    STDMETHOD(QueryInterface)(REFIID riid, void** ppv) override
+    // IUnknown
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
     {
-        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IClassFactory))
+        if (!ppv) return E_INVALIDARG;
+        *ppv = nullptr;
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_IClassFactory))
         {
-            *ppv = this;
+            *ppv = static_cast<IClassFactory*>(this);
             AddRef();
             return S_OK;
         }
         return E_NOINTERFACE;
     }
-
-    STDMETHOD_(ULONG, AddRef)() override { return ++_cRef; }
-
-    STDMETHOD_(ULONG, Release)() override
+    STDMETHODIMP_(ULONG) AddRef()  override { return ++_cRef; }
+    STDMETHODIMP_(ULONG) Release() override
     {
-        if (--_cRef == 0)
-        {
-            delete this;
-            return 0;
-        }
-        return _cRef;
+        long c = --_cRef;
+        if (c == 0) delete this;
+        return c;
     }
 
-    STDMETHOD(CreateInstance)(IUnknown* pUnkOuter, REFIID riid, void** ppvObject) override
+    // IClassFactory
+    STDMETHODIMP CreateInstance(IUnknown* pUnkOuter, REFIID riid, void** ppvObject) override
     {
-        if (pUnkOuter)
-            return CLASS_E_NOAGGREGATION;
+        if (pUnkOuter)   return CLASS_E_NOAGGREGATION;
+        if (!ppvObject)  return E_INVALIDARG;
+        *ppvObject = nullptr;
 
         FacelookProvider* pProvider = new (std::nothrow) FacelookProvider();
-        if (!pProvider)
-            return E_OUTOFMEMORY;
+        if (!pProvider) return E_OUTOFMEMORY;
 
-        HRESULT hr = pProvider->QueryInterface(riid, ppvObject);
+        HRESULT hr = pProvider->QueryInterface(IID_ICredentialProvider, ppvObject);
         pProvider->Release();
         return hr;
     }
-
-    STDMETHOD(LockServer)(BOOL fLock) override
-    {
-        return S_OK;
-    }
+    STDMETHODIMP LockServer(BOOL fLock) override { return S_OK; }
 
 private:
     long _cRef;
 };
 
-// DLL entry point
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
-{
-    switch (ul_reason_for_call)
-    {
-    case DLL_PROCESS_ATTACH:
-        g_hModule = hModule;
-        DisableThreadLibraryCalls(hModule);
-        break;
-    case DLL_PROCESS_DETACH:
-        break;
-    }
-    return TRUE;
-}
+// ---------------------------------------------------------------------------
 
-// COM entry points
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv)
 {
+    if (!ppv) return E_INVALIDARG;
+    *ppv = nullptr;
+
     if (!IsEqualCLSID(rclsid, CLSID_FacelookProvider))
         return CLASS_E_CLASSNOTAVAILABLE;
 
+    // COM asks for IClassFactory (or IUnknown) — return the factory
+    if (!IsEqualIID(riid, IID_IClassFactory) &&
+        !IsEqualIID(riid, IID_IUnknown))
+        return E_NOINTERFACE;
+
     ClassFactory* pFactory = new (std::nothrow) ClassFactory();
-    if (!pFactory)
-        return E_OUTOFMEMORY;
+    if (!pFactory) return E_OUTOFMEMORY;
 
-    HRESULT hr = pFactory->QueryInterface(riid, ppv);
-    pFactory->Release();
-    return hr;
-}
-
-STDAPI DllCanUnloadNow()
-{
+    *ppv = static_cast<IClassFactory*>(pFactory);
     return S_OK;
 }
 
-// Registry functions for COM registration
-STDAPI DllRegisterServer()
-{
-    // This would normally register the COM class in registry
-    // In practice, use the register.reg file
-    return S_OK;
-}
-
-STDAPI DllUnregisterServer()
-{
-    return S_OK;
-}
+STDAPI DllCanUnloadNow()      { return S_OK; }
+STDAPI DllRegisterServer()    { return S_OK; }
+STDAPI DllUnregisterServer()  { return S_OK; }

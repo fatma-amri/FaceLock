@@ -61,9 +61,13 @@ def _get_capture() -> cv2.VideoCapture | None:
 
     logger.info("Initialising webcam (index=%d)…", DEFAULT_CAMERA_INDEX)
 
-    # CAP_DSHOW reduces buffering latency on Windows; unsupported on other platforms.
     if platform.system() == "Windows":
-        cap = cv2.VideoCapture(DEFAULT_CAMERA_INDEX, cv2.CAP_DSHOW)
+        # MSMF + MJPG is the only combination that works with the
+        # VMware Virtual USB Video Device (CAP_DSHOW returns frames of all zeros).
+        import os
+        os.environ.setdefault('OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS', '0')
+        cap = cv2.VideoCapture(DEFAULT_CAMERA_INDEX, cv2.CAP_MSMF)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
     else:
         cap = cv2.VideoCapture(DEFAULT_CAMERA_INDEX)
 
@@ -74,9 +78,6 @@ def _get_capture() -> cv2.VideoCapture | None:
     # Force resolution
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-
-    # Disable auto-buffering lag (keep buffer small)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     _capture = cap
     logger.info("Webcam opened successfully.")
